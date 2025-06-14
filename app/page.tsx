@@ -200,6 +200,11 @@ export default function Home() {
     }
   ]);
 
+  const [isMounted, setIsMounted] = useState(false);
+  useEffect(() => {
+    setIsMounted(true);
+  }, []);
+
   const sensors = useSensors(
     useSensor(PointerSensor),
     useSensor(KeyboardSensor, {
@@ -269,7 +274,7 @@ export default function Home() {
       <div className="bg-white p-8 md:p-12 rounded-lg shadow-xl w-full max-w-4xl">
         <div className="space-y-6">
             <PageTitleBlock block={pageTitle} onUpdate={handleBlockUpdate} />
-            <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+            {isMounted && <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                 <SortableContext items={contentBlocks} strategy={verticalListSortingStrategy}>
                     {contentBlocks.map(block => (
                         <SortableEditableBlock
@@ -281,7 +286,7 @@ export default function Home() {
                         />
                     ))}
                 </SortableContext>
-            </DndContext>
+            </DndContext>}
         </div>
       </div>
       <ContentAnalysisWidget suggestions={suggestions} />
