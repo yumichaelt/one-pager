@@ -1,6 +1,6 @@
 "use client";
 
-import { useState, useCallback, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo, useLayoutEffect } from "react";
 import { v4 as uuidv4 } from 'uuid';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
@@ -15,12 +15,14 @@ type Block = {
 
 type EditableBlockProps = {
     block: Block;
+    isAiLoading: boolean;
     onUpdate: (id: string, newBlock: Partial<Block>) => void;
     onDelete: (id:string) => void;
     onAddAfter: (id: string) => void;
+    onAiAction: (blockId: string, action: string) => void;
 };
 
-const SortableEditableBlock = ({ block, onUpdate, onDelete, onAddAfter }: EditableBlockProps) => {
+const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAfter, onAiAction }: EditableBlockProps) => {
     const { attributes, listeners, setNodeRef, transform, transition } = useSortable({id: block.id});
     const style = {
         transform: CSS.Transform.toString(transform),
@@ -29,9 +31,9 @@ const SortableEditableBlock = ({ block, onUpdate, onDelete, onAddAfter }: Editab
     
     const [menuOpen, setMenuOpen] = useState(false);
     const [isAiMenuOpen, setAiMenuOpen] = useState(false);
-    const [isAiLoading, setIsAiLoading] = useState(false);
     const titleInputRef = useRef<HTMLInputElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
+    const contentRef = useRef<HTMLTextAreaElement>(null);
 
     const handleUpdate = (key: 'title' | 'content', value: string) => {
         onUpdate(block.id, { [key]: value });
@@ -51,14 +53,15 @@ const SortableEditableBlock = ({ block, onUpdate, onDelete, onAddAfter }: Editab
     const handleAIAction = (action: string) => {
         setMenuOpen(false);
         setAiMenuOpen(false);
-        setIsAiLoading(true);
-
-        setTimeout(() => {
-            const refinedContent = generateFakeAIResponse(action, block.content);
-            onUpdate(block.id, { content: refinedContent });
-            setIsAiLoading(false);
-        }, 1500);
+        onAiAction(block.id, action);
     };
+
+    useLayoutEffect(() => {
+        if (contentRef.current) {
+            contentRef.current.style.height = 'auto';
+            contentRef.current.style.height = `${contentRef.current.scrollHeight}px`;
+        }
+    }, [block.content]);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -103,11 +106,12 @@ const SortableEditableBlock = ({ block, onUpdate, onDelete, onAddAfter }: Editab
                     className="w-full text-2xl font-semibold text-gray-800 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md p-1"
                 />
                  <textarea
+                    ref={contentRef}
                     value={block.content}
                     onChange={(e) => handleUpdate('content', e.target.value)}
                     placeholder="Start writing here..."
-                    className="w-full mt-1 p-1 text-gray-700 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md resize-none"
-                    rows={3}
+                    className="w-full mt-1 p-1 text-gray-700 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md"
+                    style={{ overflow: 'hidden' }}
                 />
             </div>
             <div className="relative opacity-0 group-hover:opacity-100 transition-opacity pl-2 pt-2">
@@ -154,21 +158,6 @@ const getAIActions = (title: string): string[] => {
     return [...specificActions, ...defaultActions];
 }
 
-const generateFakeAIResponse = (action: string, originalContent: string): string => {
-    const templates: { [key: string]: string } = {
-        "Clarify Problem": `To better clarify the problem, let's reframe it. The core issue is not just a cluttered UI, but the resulting high cognitive load on users, which directly causes the 20% engagement drop. By focusing on "reducing cognitive load," we can set a clearer design target.`,
-        "Expand on Impact": `The 20% drop in engagement has cascading negative effects. It means lower user retention, reduced ad revenue, and a weakened market position against competitors. A revitalized UI would not only recover this loss but could also attract a new user segment, boosting overall growth.`,
-        "Suggest Metrics": `To measure success, we should track: 1. User Engagement Rate (increase from X% to Y%), 2. Task Completion Time (reduce by Z seconds), 3. User Satisfaction Score (via in-app surveys), and 4. App Store Ratings (improve from A to B stars).`,
-        "Strengthen Solution": `To strengthen the solution, we should incorporate user-centric design principles. Let's add A/B testing for key UI elements, conduct usability testing with a target user group before full rollout, and build in an analytics framework to monitor post-launch performance.`,
-        "Outline Implementation Steps": `Here is a phased implementation plan:\n1. **Phase 1 (2 weeks):** Wireframing and Prototyping\n2. **Phase 2 (4 weeks):** UI/UX Design and Asset Creation\n3. **Phase 3 (6 weeks):** Frontend and Backend Development\n4. **Phase 4 (2 weeks):** Testing and Deployment`,
-        "Estimate Effort": `Based on the proposed plan, the estimated effort is approximately 8-10 developer weeks. This includes design, development, and testing, assuming a team of two engineers and one designer.`,
-        "Improve Writing": `The current mobile application's user interface is convoluted, which has resulted in a significant 20% decrease in user engagement. We need a strategic overhaul to improve the user experience.`,
-        "Make More Concise": `A cluttered mobile UI has led to a 20% drop in user engagement.`
-    };
-
-    return templates[action] || `Here's a refined version of your content:\n\n"${originalContent}"`;
-}
-
 const PageTitleBlock = ({ block, onUpdate }: { block: Block; onUpdate: (id: string, newBlock: Partial<Block>) => void; }) => (
      <input
         type="text"
@@ -184,6 +173,7 @@ export default function Home() {
     const [documentId, setDocumentId] = useState<string | null>(null);
     const [blocks, setBlocks] = useState<Block[]>([]);
     const [loading, setLoading] = useState(true);
+    const [loadingBlockId, setLoadingBlockId] = useState<string | null>(null);
 
     const sensors = useSensors(
         useSensor(PointerSensor),
@@ -298,9 +288,6 @@ export default function Home() {
             return block;
         });
         setBlocks(newBlocks);
-        if(documentId) {
-            saveToSupabase(documentId, newBlocks);
-        }
     };
 
     const handleAddBlockAfter = (afterId: string) => {
@@ -313,20 +300,14 @@ export default function Home() {
         const newBlocks = [...blocks];
         newBlocks.splice(index + 1, 0, newBlock);
         setBlocks(newBlocks);
-        if(documentId) {
-            saveToSupabase(documentId, newBlocks);
-        }
-    }
+    };
 
     const handleDeleteBlock = (id: string) => {
         if (blocks.length > 2) { 
             const newBlocks = blocks.filter(block => block.id !== id);
             setBlocks(newBlocks);
-            if(documentId) {
-                saveToSupabase(documentId, newBlocks);
-            }
         }
-    }
+    };
 
     const handleDragEnd = (event: DragEndEvent) => {
         const {active, over} = event;
@@ -341,14 +322,88 @@ export default function Home() {
                 return arrayMove(items, oldIndex, newIndex);
             })(blocks);
             setBlocks(reorderedBlocks);
-            if(documentId) {
-                saveToSupabase(documentId, reorderedBlocks);
-            }
         }
     };
 
     const contentBlocks = useMemo(() => blocks.filter(b => b.id !== 'title'), [blocks]);
     
+    const handleGenerateOnePager = async () => {
+        setLoading(true);
+        try {
+            const titleBlock = blocks.find(b => b.id === 'title');
+            if (!titleBlock) {
+                alert("Please enter a title first.");
+                return;
+            }
+
+            const { data, error } = await supabase.functions.invoke('generate-one-pager', {
+                body: { title: titleBlock.title },
+            });
+
+            if (error) throw error;
+            
+            if (data && data.generatedOnePager && data.generatedOnePager.fields) {
+                const { fields } = data.generatedOnePager;
+                
+                const generatedBlocks: Block[] = fields.map((field: { label: string, value: string }) => ({
+                    id: uuidv4(),
+                    title: field.label,
+                    content: field.value
+                }));
+
+                const newBlocks: Block[] = [
+                    { id: 'title', title: titleBlock.title, content: '' },
+                    ...generatedBlocks
+                ];
+                setBlocks(newBlocks);
+            }
+
+        } catch (error) {
+            console.error('Error generating one-pager:', error);
+            alert("Failed to generate the one-pager. Please check the console for details.");
+        } finally {
+            setLoading(false);
+        }
+    };
+
+    const handleAiAction = async (blockId: string, actionText: string) => {
+        setLoadingBlockId(blockId);
+
+        try {
+            const titleBlock = blocks.find(b => b.id === 'title');
+            const contentBlocks = blocks.filter(b => b.id !== 'title');
+
+            const documentContext = {
+                title: titleBlock?.title || "Untitled",
+                fields: contentBlocks.map(b => ({ label: b.title, value: b.content }))
+            };
+
+            const { data, error } = await supabase.functions.invoke('refine-with-ai', {
+                body: { documentContext, specificAction: actionText },
+            });
+
+            if (error) throw error;
+            
+            if (data && data.refinedText) {
+                setBlocks(currentBlocks => currentBlocks.map(block => {
+                    if (block.id === blockId) {
+                        return {
+                            ...block,
+                            content: `${block.content}\n\n---\n**AI Suggestion for "${actionText}":**\n${data.refinedText}`
+                        };
+                    }
+                    return block;
+                }));
+            }
+
+        } catch (error) {
+            console.error('Error invoking Supabase function:', error);
+            // You could show an error message to the user here
+        } finally {
+            setLoadingBlockId(null);
+        }
+    };
+
     if (loading) {
         return (
             <main className="flex min-h-screen flex-col items-center p-24">
@@ -360,15 +415,38 @@ export default function Home() {
     return (
         <main className="flex min-h-screen flex-col items-center p-24">
             <div className="w-full max-w-4xl">
-                {blocks.find(b => b.id === 'title') && (
-                    <PageTitleBlock block={blocks.find(b => b.id === 'title')!} onUpdate={handleBlockUpdate} />
-                )}
+                <div className="flex justify-between items-center mb-4">
+                    {blocks.find(b => b.id === 'title') && (
+                        <div className="flex-grow">
+                            <PageTitleBlock block={blocks.find(b => b.id === 'title')!} onUpdate={handleBlockUpdate} />
+                        </div>
+                    )}
+                    <button 
+                        onClick={handleGenerateOnePager}
+                        disabled={loading}
+                        className="ml-4 bg-indigo-600 text-white px-4 py-2 rounded-md flex items-center space-x-2 hover:bg-indigo-700 transition-colors disabled:bg-indigo-300"
+                    >
+                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
+                            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
+                            <circle cx="12" cy="12" r="3"/>
+                        </svg>
+                        <span>Generate</span>
+                    </button>
+                </div>
                
                 <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
                     <SortableContext items={contentBlocks} strategy={verticalListSortingStrategy}>
                         <div className="mt-8 space-y-4">
                             {contentBlocks.map(block => (
-                                <SortableEditableBlock key={block.id} block={block} onUpdate={handleBlockUpdate} onDelete={handleDeleteBlock} onAddAfter={handleAddBlockAfter}/>
+                                <SortableEditableBlock 
+                                    key={block.id} 
+                                    block={block} 
+                                    isAiLoading={loadingBlockId === block.id}
+                                    onUpdate={handleBlockUpdate} 
+                                    onDelete={handleDeleteBlock} 
+                                    onAddAfter={handleAddBlockAfter}
+                                    onAiAction={handleAiAction}
+                                />
                             ))}
                         </div>
                     </SortableContext>
