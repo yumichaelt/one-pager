@@ -5,7 +5,7 @@ import { v4 as uuidv4 } from 'uuid';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import { createClient } from "@/lib/supabase/client";
+import { useAuth } from "./contexts/AuthContext";
 
 type Block = {
   id: string;
@@ -180,7 +180,7 @@ const PageTitleBlock = ({ block, onUpdate }: { block: Block; onUpdate: (id: stri
 );
 
 export default function Home() {
-    const supabase = createClient();
+    const { session, supabase } = useAuth();
     const [documentId, setDocumentId] = useState<string | null>(null);
     const [blocks, setBlocks] = useState<Block[]>([]);
     const [loading, setLoading] = useState(true);
@@ -225,7 +225,8 @@ export default function Home() {
     useEffect(() => {
         const fetchDocument = async () => {
             setLoading(true);
-            const { data: { user } } = await supabase.auth.getUser();
+            const user = session?.user;
+            
             if (!user) {
                 // GUEST MODE: Load default content, don't save.
                 setBlocks([
@@ -287,7 +288,7 @@ export default function Home() {
         };
 
         fetchDocument();
-    }, [supabase]);
+    }, [session, supabase]);
 
     const handleBlockUpdate = (id: string, newBlockData: Partial<Block>) => {
         const newBlocks = blocks.map(block => {

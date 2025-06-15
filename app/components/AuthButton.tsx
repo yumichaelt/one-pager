@@ -1,17 +1,15 @@
 'use client'
 
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
 import AuthModal from './AuthModal'
-import { Session } from '@supabase/supabase-js'
+import { useAuth } from '../contexts/AuthContext'
 
-export default function AuthButton({ session }: { session: Session | null }) {
+export default function AuthButton() {
   const [isModalOpen, setIsModalOpen] = useState(false)
-  const supabase = createClient()
+  const { session, supabase } = useAuth()
 
   const handleSignOut = async () => {
     await supabase.auth.signOut()
-    // No router.refresh() needed, the SupabaseListener will handle it
   }
 
   return (

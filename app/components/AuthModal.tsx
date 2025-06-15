@@ -1,8 +1,7 @@
 'use client'
 
 import { useState } from 'react'
-import { createClient } from '@/lib/supabase/client'
-import { useRouter } from 'next/navigation'
+import { useAuth } from '../contexts/AuthContext'
 
 interface AuthModalProps {
   isOpen: boolean
@@ -15,8 +14,7 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
   const [password, setPassword] = useState('')
   const [error, setError] = useState<string | null>(null)
   const [loading, setLoading] = useState(false)
-  const supabase = createClient()
-  const router = useRouter()
+  const { supabase } = useAuth()
 
   const handleAuthAction = async (e: React.FormEvent) => {
     e.preventDefault()
@@ -27,7 +25,6 @@ export default function AuthModal({ isOpen, onClose }: AuthModalProps) {
       if (activeTab === 'signIn') {
         const { error } = await supabase.auth.signInWithPassword({ email, password })
         if (error) throw error
-        router.push('/')
       } else {
         const { error } = await supabase.auth.signUp({ email, password })
         if (error) throw error
