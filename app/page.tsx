@@ -1,13 +1,11 @@
 "use client";
 
-import { useState, ChangeEvent, useRef, useEffect, useMemo } from "react";
+import { useState, useCallback, useRef, useEffect, useMemo } from "react";
 import { v4 as uuidv4 } from 'uuid';
 import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, useSensors, DragEndEvent } from '@dnd-kit/core';
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
-import ContentAnalysisWidget from "./components/ContentAnalysisWidget";
-import { useContentAnalysis } from "../hooks/useContentAnalysis";
-import { DocumentContent, Suggestion } from "../lib/content-analysis";
+import { createClient } from "@/lib/supabase/client";
 
 type Block = {
   id: string;
@@ -182,114 +180,199 @@ const PageTitleBlock = ({ block, onUpdate }: { block: Block; onUpdate: (id: stri
 );
 
 export default function Home() {
-    const [blocks, setBlocks] = useState<Block[]>([
-    {
-      id: 'title',
-      title: "One-Pager Title",
-      content: "",
-    },
-    {
-      id: uuidv4(),
-      title: "Problem Statement",
-      content: "Our current mobile app has a cluttered user interface, leading to a 20% drop-off in user engagement.",
-    },
-    {
-      id: uuidv4(),
-      title: "Proposed Solution",
-      content: "A complete redesign of the mobile app with a focus on intuitive navigation, a minimalist aesthetic, and personalized content discovery.",
-    }
-  ]);
+    const supabase = createClient();
+    const [documentId, setDocumentId] = useState<string | null>(null);
+    const [blocks, setBlocks] = useState<Block[]>([]);
+    const [loading, setLoading] = useState(true);
 
-  const [isMounted, setIsMounted] = useState(false);
-  useEffect(() => {
-    setIsMounted(true);
-  }, []);
+    const sensors = useSensors(
+        useSensor(PointerSensor),
+        useSensor(KeyboardSensor, {
+            coordinateGetter: sortableKeyboardCoordinates,
+        })
+    );
 
-  const sensors = useSensors(
-    useSensor(PointerSensor),
-    useSensor(KeyboardSensor, {
-      coordinateGetter: sortableKeyboardCoordinates,
-    })
-  );
-
-  const handleBlockUpdate = (id: string, newBlockData: Partial<Block>) => {
-    setBlocks(prevBlocks => prevBlocks.map(block => {
-        if (block.id === id) {
-            return { ...block, ...newBlockData };
-        }
-        return block;
-    }));
-  };
-
-  const handleAddBlockAfter = (afterId: string) => {
-    const newBlock: Block = {
-        id: uuidv4(),
-        title: "New Section",
-        content: "",
+    // Debounce saving to Supabase
+    const debounce = (func: Function, delay: number) => {
+        let timeoutId: NodeJS.Timeout;
+        return (...args: any[]) => {
+            clearTimeout(timeoutId);
+            timeoutId = setTimeout(() => {
+                func(...args);
+            }, delay);
+        };
     };
-    const index = blocks.findIndex(b => b.id === afterId);
-    const newBlocks = [...blocks];
-    newBlocks.splice(index + 1, 0, newBlock);
-    setBlocks(newBlocks);
-  }
 
-  const handleDeleteBlock = (id: string) => {
-    if (blocks.length > 2) { // Always keep title and at least one content block
-        setBlocks(blocks.filter(block => block.id !== id));
-    }
-  }
+    const saveToSupabase = useCallback(
+        debounce(async (docId: string, newBlocks: Block[]) => {
+            if (!docId) return;
+            
+            const title = newBlocks.find(b => b.id === 'title')?.title || "Untitled";
+            const fields = newBlocks.filter(b => b.id !== 'title');
 
-  const handleDragEnd = (event: DragEndEvent) => {
-    const {active, over} = event;
+            const { error } = await supabase
+                .from('documents')
+                .update({ title, fields: fields })
+                .eq('id', docId);
+
+            if (error) {
+                console.error("Error saving to Supabase:", error);
+            }
+        }, 1000),
+        [supabase]
+    );
     
-    if (over && active.id !== over.id) {
-      setBlocks((items) => {
-        const oldIndex = items.findIndex(item => item.id === active.id);
-        const newIndex = items.findIndex(item => item.id === over.id);
-        if (items[oldIndex].id === 'title' || (over && items[newIndex].id === 'title')) {
-            return items; // Prevent reordering with the title
+    useEffect(() => {
+        const fetchDocument = async () => {
+            setLoading(true);
+            const { data: { user } } = await supabase.auth.getUser();
+            if (!user) {
+                // GUEST MODE: Load default content, don't save.
+                setBlocks([
+                    { id: 'title', title: "My One-Pager", content: "" },
+                    { id: uuidv4(), title: "Problem Statement", content: "As a guest, your work won't be saved." },
+                    { id: uuidv4(), title: "Proposed Solution", content: "Sign up to save your documents!" },
+                ]);
+                setDocumentId(null);
+                setLoading(false);
+                return;
+            }
+            
+            // LOGGED-IN USER: Fetch from Supabase as before
+            let { data: documents, error } = await supabase
+                .from('documents')
+                .select('*')
+                .limit(1);
+
+            if (error) {
+                console.error("Error fetching document:", error);
+                setLoading(false);
+                return;
+            }
+
+            let doc;
+            if (!documents || documents.length === 0) {
+                // No documents found, create a new one
+                const newDoc = {
+                    user_id: user.id,
+                    title: "Untitled One-Pager",
+                    fields: [
+                        { id: uuidv4(), title: "Problem Statement", content: "" },
+                        { id: uuidv4(), title: "Proposed Solution", content: "" }
+                    ]
+                };
+                const { data, error: createError } = await supabase
+                    .from('documents')
+                    .insert(newDoc)
+                    .select()
+                    .single();
+                
+                if (createError) {
+                    console.error("Error creating document:", createError);
+                    setLoading(false);
+                    return;
+                }
+                doc = data;
+            } else {
+                doc = documents[0];
+            }
+
+            setDocumentId(doc.id);
+            const fetchedBlocks: Block[] = [
+                { id: 'title', title: doc.title, content: '' },
+                ...(doc.fields || [])
+            ];
+            setBlocks(fetchedBlocks);
+            setLoading(false);
+        };
+
+        fetchDocument();
+    }, [supabase]);
+
+    const handleBlockUpdate = (id: string, newBlockData: Partial<Block>) => {
+        const newBlocks = blocks.map(block => {
+            if (block.id === id) {
+                return { ...block, ...newBlockData };
+            }
+            return block;
+        });
+        setBlocks(newBlocks);
+        if(documentId) {
+            saveToSupabase(documentId, newBlocks);
         }
-        const newItems = arrayMove(items, oldIndex, newIndex);
-        return newItems;
-      });
+    };
+
+    const handleAddBlockAfter = (afterId: string) => {
+        const newBlock: Block = {
+            id: uuidv4(),
+            title: "New Section",
+            content: "",
+        };
+        const index = blocks.findIndex(b => b.id === afterId);
+        const newBlocks = [...blocks];
+        newBlocks.splice(index + 1, 0, newBlock);
+        setBlocks(newBlocks);
+        if(documentId) {
+            saveToSupabase(documentId, newBlocks);
+        }
     }
-  }
 
-  const pageTitle = blocks.find(b => b.id === 'title')!;
-  const contentBlocks = blocks.filter(b => b.id !== 'title');
+    const handleDeleteBlock = (id: string) => {
+        if (blocks.length > 2) { 
+            const newBlocks = blocks.filter(block => block.id !== id);
+            setBlocks(newBlocks);
+            if(documentId) {
+                saveToSupabase(documentId, newBlocks);
+            }
+        }
+    }
 
-  const documentForAnalysis = useMemo(() => ({
-    title: pageTitle.title,
-    blocks: contentBlocks.map(block => ({
-        id: block.id,
-        type: block.title, // Using section title as 'type'
-        content: block.content,
-    }))
-  }), [blocks]);
+    const handleDragEnd = (event: DragEndEvent) => {
+        const {active, over} = event;
+        
+        if (over && active.id !== over.id) {
+            const reorderedBlocks = ((items) => {
+                const oldIndex = items.findIndex(item => item.id === active.id);
+                const newIndex = items.findIndex(item => item.id === over.id);
+                if (items[oldIndex].id === 'title' || (over && items[newIndex].id === 'title')) {
+                    return items;
+                }
+                return arrayMove(items, oldIndex, newIndex);
+            })(blocks);
+            setBlocks(reorderedBlocks);
+            if(documentId) {
+                saveToSupabase(documentId, reorderedBlocks);
+            }
+        }
+    };
 
-  const suggestions = useContentAnalysis(documentForAnalysis);
+    const contentBlocks = useMemo(() => blocks.filter(b => b.id !== 'title'), [blocks]);
+    
+    if (loading) {
+        return (
+            <main className="flex min-h-screen flex-col items-center p-24">
+                <p>Loading your document...</p>
+            </main>
+        )
+    }
 
-  return (
-    <main className="container mx-auto px-6 py-12 flex justify-center">
-      <div className="bg-white p-8 md:p-12 rounded-lg shadow-xl w-full max-w-4xl">
-        <div className="space-y-6">
-            <PageTitleBlock block={pageTitle} onUpdate={handleBlockUpdate} />
-            {isMounted && <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                <SortableContext items={contentBlocks} strategy={verticalListSortingStrategy}>
-                    {contentBlocks.map(block => (
-                        <SortableEditableBlock
-                            key={block.id}
-                            block={block}
-                            onUpdate={handleBlockUpdate}
-                            onDelete={handleDeleteBlock}
-                            onAddAfter={handleAddBlockAfter}
-                        />
-                    ))}
-                </SortableContext>
-            </DndContext>}
-        </div>
-      </div>
-      <ContentAnalysisWidget suggestions={suggestions} />
-    </main>
-  );
+    return (
+        <main className="flex min-h-screen flex-col items-center p-24">
+            <div className="w-full max-w-4xl">
+                {blocks.find(b => b.id === 'title') && (
+                    <PageTitleBlock block={blocks.find(b => b.id === 'title')!} onUpdate={handleBlockUpdate} />
+                )}
+               
+                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                    <SortableContext items={contentBlocks} strategy={verticalListSortingStrategy}>
+                        <div className="mt-8 space-y-4">
+                            {contentBlocks.map(block => (
+                                <SortableEditableBlock key={block.id} block={block} onUpdate={handleBlockUpdate} onDelete={handleDeleteBlock} onAddAfter={handleAddBlockAfter}/>
+                            ))}
+                        </div>
+                    </SortableContext>
+                </DndContext>
+            </div>
+        </main>
+    );
 }
