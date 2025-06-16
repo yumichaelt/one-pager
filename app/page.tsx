@@ -6,11 +6,19 @@ import { DndContext, closestCenter, KeyboardSensor, PointerSensor, useSensor, us
 import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, verticalListSortingStrategy } from '@dnd-kit/sortable';
 import { CSS } from '@dnd-kit/utilities';
 import { useAuth } from "./contexts/AuthContext";
+import SideBySideModal from "./components/SideBySideModal";
+
+type AiSuggestion = {
+    forField: 'title' | 'content';
+    text: string;
+    action: string;
+};
 
 type Block = {
   id: string;
   title: string;
   content: string;
+  suggestion?: AiSuggestion | null;
 }
 
 type EditableBlockProps = {
@@ -19,10 +27,13 @@ type EditableBlockProps = {
     onUpdate: (id: string, newBlock: Partial<Block>) => void;
     onDelete: (id:string) => void;
     onAddAfter: (id: string) => void;
-    onAiAction: (blockId: string, action: string) => void;
+    onAiAction: (blockId: string, action: string, field: 'title' | 'content') => void;
+    onAcceptSuggestion: (blockId: string) => void;
+    onRejectSuggestion: (blockId: string) => void;
+    onViewSuggestion: (blockId: string) => void;
 };
 
-const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAfter, onAiAction }: EditableBlockProps) => {
+const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAfter, onAiAction, onAcceptSuggestion, onRejectSuggestion, onViewSuggestion }: EditableBlockProps) => {
     const { attributes, listeners, setNodeRef, transform, transition } = useSortable({id: block.id});
     const style = {
         transform: CSS.Transform.toString(transform),
@@ -35,7 +46,16 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
     const menuRef = useRef<HTMLDivElement>(null);
     const contentRef = useRef<HTMLTextAreaElement>(null);
 
+    const hasTitleSuggestion = block.suggestion?.forField === 'title';
+    const hasContentSuggestion = block.suggestion?.forField === 'content';
+
+    const displayTitle = hasTitleSuggestion ? block.suggestion!.text : block.title;
+    const displayContent = hasContentSuggestion ? block.suggestion!.text : block.content;
+
     const handleUpdate = (key: 'title' | 'content', value: string) => {
+        if (block.suggestion) {
+            onRejectSuggestion(block.id);
+        }
         onUpdate(block.id, { [key]: value });
         setMenuOpen(false);
     };
@@ -50,10 +70,10 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
         setMenuOpen(false);
     };
     
-    const handleAIAction = (action: string) => {
+    const handleAIAction = (action: string, field: 'title' | 'content') => {
         setMenuOpen(false);
         setAiMenuOpen(false);
-        onAiAction(block.id, action);
+        onAiAction(block.id, action, field);
     };
 
     useLayoutEffect(() => {
@@ -100,54 +120,88 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
                  <input
                     ref={titleInputRef}
                     type="text"
-                    value={block.title}
+                    value={displayTitle}
                     onChange={(e) => handleUpdate('title', e.target.value)}
                     placeholder="Section Title"
-                    className="w-full text-2xl font-semibold text-gray-800 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md p-1"
+                    className={`w-full text-2xl font-semibold text-gray-800 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md p-1 ${hasTitleSuggestion ? 'bg-green-100' : ''}`}
                 />
                  <textarea
                     ref={contentRef}
-                    value={block.content}
+                    value={displayContent}
                     onChange={(e) => handleUpdate('content', e.target.value)}
                     placeholder="Start writing here..."
-                    className="w-full mt-1 p-1 text-gray-700 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md"
+                    className={`w-full mt-1 p-1 text-gray-700 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md ${hasContentSuggestion ? 'bg-green-100' : ''}`}
                     style={{ overflow: 'hidden' }}
                 />
             </div>
             <div className="relative opacity-0 group-hover:opacity-100 transition-opacity pl-2 pt-2">
-                <div className="relative" ref={menuRef}>
-                     <button onClick={() => setMenuOpen(!menuOpen)} className="p-1 text-gray-400 hover:text-gray-600 rounded-md">
-                        <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" ><path d="M5 10C3.9 10 3 10.9 3 12C3 13.1 3.9 14 5 14C6.1 14 7 13.1 7 12C7 10.9 6.1 10 5 10ZM19 10C17.9 10 17 10.9 17 12C17 13.1 17.9 14 19 14C20.1 14 21 13.1 21 12C21 10.9 20.1 10 19 10ZM12 10C10.9 10 10 10.9 10 12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12C14 10.9 13.1 10 12 10Z"></path></svg>
-                    </button>
-                    {menuOpen && (
-                        <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-10 border">
-                           <button onClick={handleRename} className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Rename</button>
-                           <div className="relative" onMouseEnter={() => setAiMenuOpen(true)} onMouseLeave={() => setAiMenuOpen(false)}>
-                               <button className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex justify-between items-center">
-                                   <span>Refine with AI</span>
-                                   <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
-                                </button>
-                               {isAiMenuOpen && (
-                                   <div className="absolute left-full -top-1 mt-0 w-48 bg-white rounded-md shadow-lg z-20 border">
-                                       {getAIActions(block.title).map(action => (
-                                           <button key={action} onClick={() => handleAIAction(action)} className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{action}</button>
-                                       ))}
-                                   </div>
-                               )}
-                           </div>
-                           <button onClick={handleDelete} className="text-left w-full px-4 py-2 text-sm text-red-600 hover:bg-gray-100">Delete</button>
-                        </div>
-                    )}
-                </div>
+                {block.suggestion ? (
+                    <div className="flex items-center space-x-1 bg-white border border-slate-200 rounded-lg shadow-md p-1">
+                        <button onClick={() => onViewSuggestion(block.id)} title="View Changes" className="p-2 rounded-md text-slate-600 hover:bg-slate-100 hover:text-indigo-600">
+                           <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M2.036 12.322a1.012 1.012 0 010-.639C3.423 7.51 7.36 4.5 12 4.5c4.638 0 8.573 3.007 9.963 7.178.07.207.07.432 0 .639C20.577 16.49 16.64 19.5 12 19.5c-4.638 0-8.573-3.007-9.963-7.178z" />
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" />
+                            </svg>
+                        </button>
+                        <button onClick={() => onRejectSuggestion(block.id)} title="Reject" className="p-2 rounded-md text-slate-600 hover:bg-slate-100 hover:text-red-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M6 18L18 6M6 6l12 12" />
+                            </svg>
+                        </button>
+                        <button onClick={() => onAcceptSuggestion(block.id)} title="Accept" className="p-2 rounded-md text-slate-600 hover:bg-slate-100 hover:text-green-600">
+                            <svg xmlns="http://www.w3.org/2000/svg" fill="none" viewBox="0 0 24 24" strokeWidth={1.5} stroke="currentColor" className="w-5 h-5">
+                                <path strokeLinecap="round" strokeLinejoin="round" d="M4.5 12.75l6 6 9-13.5" />
+                            </svg>
+                        </button>
+                    </div>
+                ) : (
+                    <div className="relative" ref={menuRef}>
+                         <button onClick={() => setMenuOpen(!menuOpen)} className="p-1 text-gray-400 hover:text-gray-600 rounded-md">
+                            <svg className="h-5 w-5" viewBox="0 0 24 24" fill="currentColor" xmlns="http://www.w3.org/2000/svg" ><path d="M5 10C3.9 10 3 10.9 3 12C3 13.1 3.9 14 5 14C6.1 14 7 13.1 7 12C7 10.9 6.1 10 5 10ZM19 10C17.9 10 17 10.9 17 12C17 13.1 17.9 14 19 14C20.1 14 21 13.1 21 12C21 10.9 20.1 10 19 10ZM12 10C10.9 10 10 10.9 10 12C10 13.1 10.9 14 12 14C13.1 14 14 13.1 14 12C14 10.9 13.1 10 12 10Z"></path></svg>
+                        </button>
+                        {menuOpen && (
+                            <div className="absolute right-0 mt-2 w-48 bg-white rounded-md shadow-lg z-10 border">
+                               <button onClick={handleRename} className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">Rename</button>
+                               <div className="relative" onMouseEnter={() => setAiMenuOpen(true)} onMouseLeave={() => setAiMenuOpen(false)}>
+                                   <button className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100 flex justify-between items-center">
+                                       <span>Refine with AI</span>
+                                       <svg className="h-4 w-4" fill="none" stroke="currentColor" viewBox="0 0 24 24" xmlns="http://www.w3.org/2000/svg"><path strokeLinecap="round" strokeLinejoin="round" strokeWidth={2} d="M9 5l7 7-7 7" /></svg>
+                                    </button>
+                                   {isAiMenuOpen && (
+                                       <div className="absolute left-full -top-1 mt-0 w-48 bg-white rounded-md shadow-lg z-20 border">
+                                           <div className="py-1">
+                                                <div className="px-3 py-1 text-xs font-semibold text-gray-500">REFINE TITLE</div>
+                                                {getAIActions(block.title, 'title').map(action => (
+                                                   <button key={action} onClick={() => handleAIAction(action, 'title')} className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{action}</button>
+                                                ))}
+                                                <div className="border-t my-1"></div>
+                                                <div className="px-3 py-1 text-xs font-semibold text-gray-500">REFINE CONTENT</div>
+                                                {getAIActions(block.title, 'content').map(action => (
+                                                   <button key={action} onClick={() => handleAIAction(action, 'content')} className="text-left w-full px-4 py-2 text-sm text-gray-700 hover:bg-gray-100">{action}</button>
+                                                ))}
+                                           </div>
+                                       </div>
+                                   )}
+                               </div>
+                               <button onClick={handleDelete} className="text-left w-full px-4 py-2 text-sm text-red-600 hover:bg-gray-100">Delete</button>
+                            </div>
+                        )}
+                    </div>
+                )}
             </div>
         </div>
     );
 };
 
-const getAIActions = (title: string): string[] => {
+const getAIActions = (title: string, field: 'title' | 'content'): string[] => {
     const lowerCaseTitle = title.toLowerCase();
-    const defaultActions = ["Improve Writing", "Make More Concise"];
+    
+    if (field === 'title') {
+        return ["Make it more impactful", "Shorten it", "Rephrase as a question"];
+    }
 
+    // field === 'content'
+    const defaultActions = ["Improve Writing", "Make More Concise"];
     let specificActions: string[] = [];
     if (lowerCaseTitle.includes('problem')) {
         specificActions = ["Clarify Problem", "Expand on Impact", "Suggest Metrics"];
@@ -174,6 +228,8 @@ export default function Home() {
     const [blocks, setBlocks] = useState<Block[]>([]);
     const [loading, setLoading] = useState(true);
     const [loadingBlockId, setLoadingBlockId] = useState<string | null>(null);
+    const [modalOpen, setModalOpen] = useState(false);
+    const [selectedBlock, setSelectedBlock] = useState<Block | null>(null);
 
     const sensors = useSensors(
         useSensor(PointerSensor),
@@ -280,14 +336,16 @@ export default function Home() {
         fetchDocument();
     }, [session, supabase]);
 
+    const titleBlock = blocks.find(b => b.id === 'title');
+    const contentBlocks = blocks.filter(b => b.id !== 'title');
+
     const handleBlockUpdate = (id: string, newBlockData: Partial<Block>) => {
-        const newBlocks = blocks.map(block => {
+        setBlocks(currentBlocks => currentBlocks.map(block => {
             if (block.id === id) {
                 return { ...block, ...newBlockData };
             }
             return block;
-        });
-        setBlocks(newBlocks);
+        }));
     };
 
     const handleAddBlockAfter = (afterId: string) => {
@@ -325,16 +383,21 @@ export default function Home() {
         }
     };
 
-    const contentBlocks = useMemo(() => blocks.filter(b => b.id !== 'title'), [blocks]);
-    
+    const handleViewSuggestion = (blockId: string) => {
+        const block = blocks.find(b => b.id === blockId);
+        if (block) {
+            setSelectedBlock(block);
+            setModalOpen(true);
+        }
+    };
+
     const handleGenerateOnePager = async () => {
-        setLoading(true);
+        if (!titleBlock?.title) {
+            alert("Please enter a title for your one-pager first.");
+            return;
+        }
+        setLoading(true); // Use main loading state for simplicity
         try {
-            const titleBlock = blocks.find(b => b.id === 'title');
-            if (!titleBlock) {
-                alert("Please enter a title first.");
-                return;
-            }
 
             const { data, error } = await supabase.functions.invoke('generate-one-pager', {
                 body: { title: titleBlock.title },
@@ -342,44 +405,48 @@ export default function Home() {
 
             if (error) throw error;
             
-            if (data && data.generatedOnePager && data.generatedOnePager.fields) {
-                const { fields } = data.generatedOnePager;
-                
-                const generatedBlocks: Block[] = fields.map((field: { label: string, value: string }) => ({
+            if (data && data.generatedOnePager) {
+                 const newBlocks = data.generatedOnePager.fields.map((field: any) => ({
                     id: uuidv4(),
                     title: field.label,
                     content: field.value
                 }));
-
-                const newBlocks: Block[] = [
-                    { id: 'title', title: titleBlock.title, content: '' },
-                    ...generatedBlocks
-                ];
-                setBlocks(newBlocks);
+                setBlocks(currentBlocks => {
+                    const title = currentBlocks.find(b => b.id === 'title')
+                    return [
+                        ...(title ? [title] : []), // keep existing title
+                        ...newBlocks
+                    ];
+                });
             }
 
         } catch (error) {
-            console.error('Error generating one-pager:', error);
-            alert("Failed to generate the one-pager. Please check the console for details.");
+            console.error('Error invoking Supabase function:', error);
+            // You could show an error message to the user here
         } finally {
             setLoading(false);
         }
     };
 
-    const handleAiAction = async (blockId: string, actionText: string) => {
+    const handleAiAction = async (blockId: string, actionText: string, field: 'title' | 'content') => {
         setLoadingBlockId(blockId);
 
         try {
-            const titleBlock = blocks.find(b => b.id === 'title');
-            const contentBlocks = blocks.filter(b => b.id !== 'title');
+            const currentBlock = blocks.find(b => b.id === blockId);
+            if (!currentBlock) return;
 
             const documentContext = {
                 title: titleBlock?.title || "Untitled",
                 fields: contentBlocks.map(b => ({ label: b.title, value: b.content }))
             };
+            
+            const targetField = {
+                label: currentBlock.title,
+                value: field === 'title' ? currentBlock.title : currentBlock.content,
+            }
 
             const { data, error } = await supabase.functions.invoke('refine-with-ai', {
-                body: { documentContext, specificAction: actionText },
+                body: { documentContext, specificAction: actionText, targetField },
             });
 
             if (error) throw error;
@@ -389,7 +456,11 @@ export default function Home() {
                     if (block.id === blockId) {
                         return {
                             ...block,
-                            content: `${block.content}\n\n---\n**AI Suggestion for "${actionText}":**\n${data.refinedText}`
+                            suggestion: {
+                                forField: field,
+                                text: data.refinedText,
+                                action: actionText,
+                            }
                         };
                     }
                     return block;
@@ -402,6 +473,29 @@ export default function Home() {
         } finally {
             setLoadingBlockId(null);
         }
+    };
+
+    const handleAcceptSuggestion = (blockId: string) => {
+        setBlocks(currentBlocks => currentBlocks.map(block => {
+            if (block.id === blockId && block.suggestion) {
+                const { forField, text } = block.suggestion;
+                return {
+                    ...block,
+                    [forField]: text, // Replace the content/title with the suggestion
+                    suggestion: null, // Clear the suggestion
+                };
+            }
+            return block;
+        }));
+    };
+
+    const handleRejectSuggestion = (blockId: string) => {
+        setBlocks(currentBlocks => currentBlocks.map(block => {
+            if (block.id === blockId) {
+                return { ...block, suggestion: null }; // Clear the suggestion
+            }
+            return block;
+        }));
     };
 
     if (loading) {
@@ -446,11 +540,27 @@ export default function Home() {
                                     onDelete={handleDeleteBlock} 
                                     onAddAfter={handleAddBlockAfter}
                                     onAiAction={handleAiAction}
+                                    onAcceptSuggestion={handleAcceptSuggestion}
+                                    onRejectSuggestion={handleRejectSuggestion}
+                                    onViewSuggestion={handleViewSuggestion}
                                 />
                             ))}
                         </div>
                     </SortableContext>
                 </DndContext>
+                {selectedBlock && selectedBlock.suggestion && (
+                    <SideBySideModal
+                        isOpen={modalOpen}
+                        onClose={() => setModalOpen(false)}
+                        onAccept={() => {
+                            handleAcceptSuggestion(selectedBlock.id);
+                            setModalOpen(false);
+                        }}
+                        originalContent={selectedBlock[selectedBlock.suggestion.forField]}
+                        suggestedContent={selectedBlock.suggestion.text}
+                        fieldName={selectedBlock.suggestion.forField}
+                    />
+                )}
             </div>
         </main>
     );

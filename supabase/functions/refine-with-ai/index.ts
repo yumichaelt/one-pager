@@ -5,9 +5,10 @@ const corsHeaders = {
   'Access-Control-Allow-Headers': 'authorization, x-client-info, apikey, content-type',
 }
 
-// This is the prompt engineering part. It creates the detailed context for the AI.
-const createPrompt = (documentContext, specificAction) => {
+// *** UPDATED PROMPT FUNCTION ***
+const createPrompt = (documentContext, targetField, specificAction) => {
   const { title, fields } = documentContext;
+  // We still build the full document to give the AI complete context
   const fullDocumentText = fields.map(f => `## ${f.label}\n${f.value}`).join('\n\n');
 
   return `You are an expert Product Manager providing feedback on a new product proposal.
@@ -19,37 +20,39 @@ Here is the full context of the document you are reviewing:
 ${fullDocumentText}
 ---
 
-Now, focusing on the content provided, perform the following specific task: "${specificAction}".
-Provide only the resulting text, without any preamble or extra formatting.
+Now, I want you to focus ONLY on the following specific section of the document:
+
+## Section to Refine: "${targetField.label}"
+### Current Content of this Section:
+"${targetField.value}"
+
+Your specific task is to: "${specificAction}".
+
+Please provide ONLY the improved text for this specific section. Do not repeat the section title or add any extra commentary. Your response should be ready to be used as a direct replacement for the current content.
 `;
 }
 
 serve(async (req) => {
-  // Handle preflight OPTIONS request
   if (req.method === 'OPTIONS') {
     return new Response('ok', { headers: corsHeaders })
   }
 
-  // 1. Get the data from the user's request
-  const { documentContext, specificAction } = await req.json();
-  const apiKey = Deno.env.get('GEMINI_API_KEY');
-
-  // We are using Google's Gemini Flash model here as an example.
-  // The API endpoint and request body might differ for other providers like OpenAI.
-  const AI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
-
-  // 2. Create the intelligent prompt
-  const prompt = createPrompt(documentContext, specificAction);
-
-  // 3. Construct the request body for the AI service
-  const requestBody = {
-    contents: [{
-      parts: [{ text: prompt }]
-    }]
-  };
-
   try {
-    // 4. Securely call the AI service from the server
+    // *** RECEIVE THE NEW targetField DATA ***
+    const { documentContext, targetField, specificAction } = await req.json();
+    const apiKey = Deno.env.get('GEMINI_API_KEY');
+
+    const AI_API_URL = `https://generativelanguage.googleapis.com/v1beta/models/gemini-2.5-flash-preview-05-20:generateContent?key=${apiKey}`;
+
+    // *** PASS targetField to the prompt creator ***
+    const prompt = createPrompt(documentContext, targetField, specificAction);
+
+    const requestBody = {
+      contents: [{
+        parts: [{ text: prompt }]
+      }]
+    };
+
     const aiResponse = await fetch(AI_API_URL, {
       method: 'POST',
       headers: { 'Content-Type': 'application/json' },
@@ -57,13 +60,14 @@ serve(async (req) => {
     });
 
     if (!aiResponse.ok) {
-      throw new Error(`AI API request failed with status ${aiResponse.status}`);
+        const errorBody = await aiResponse.text();
+        console.error("AI API Error:", errorBody);
+        throw new Error(`AI API request failed with status ${aiResponse.status}`);
     }
 
     const aiResult = await aiResponse.json();
     const refinedText = aiResult.candidates[0].content.parts[0].text;
 
-    // 5. Send the result back to the user's browser
     return new Response(
       JSON.stringify({ refinedText }),
       { headers: { ...corsHeaders, 'Content-Type': 'application/json' } },
