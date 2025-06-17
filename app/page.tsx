@@ -7,6 +7,9 @@ import { arrayMove, SortableContext, sortableKeyboardCoordinates, useSortable, v
 import { CSS } from '@dnd-kit/utilities';
 import { useAuth } from "./contexts/AuthContext";
 import SideBySideModal from "./components/SideBySideModal";
+import { JSONContent } from "@tiptap/react";
+import { TiptapEditor } from "./components/RichTextEditor";
+import AuthButton from "./components/AuthButton";
 
 type AiSuggestion = {
     forField: 'title' | 'content';
@@ -17,7 +20,7 @@ type AiSuggestion = {
 type Block = {
   id: string;
   title: string;
-  content: string;
+  content: JSONContent;
   suggestion?: AiSuggestion | null;
 }
 
@@ -44,15 +47,22 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
     const [isAiMenuOpen, setAiMenuOpen] = useState(false);
     const titleInputRef = useRef<HTMLInputElement>(null);
     const menuRef = useRef<HTMLDivElement>(null);
-    const contentRef = useRef<HTMLTextAreaElement>(null);
 
     const hasTitleSuggestion = block.suggestion?.forField === 'title';
     const hasContentSuggestion = block.suggestion?.forField === 'content';
 
     const displayTitle = hasTitleSuggestion ? block.suggestion!.text : block.title;
-    const displayContent = hasContentSuggestion ? block.suggestion!.text : block.content;
+    
+    const displayContent = useMemo(() => {
+        if (hasContentSuggestion) {
+            // Convert suggestion string to TipTap JSON format
+            return { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: block.suggestion!.text }] }] };
+        }
+        return block.content;
+    }, [block.content, block.suggestion, hasContentSuggestion]);
 
-    const handleUpdate = (key: 'title' | 'content', value: string) => {
+
+    const handleUpdate = (key: 'title' | 'content', value: string | JSONContent) => {
         if (block.suggestion) {
             onRejectSuggestion(block.id);
         }
@@ -75,13 +85,6 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
         setAiMenuOpen(false);
         onAiAction(block.id, action, field);
     };
-
-    useLayoutEffect(() => {
-        if (contentRef.current) {
-            contentRef.current.style.height = 'auto';
-            contentRef.current.style.height = `${contentRef.current.scrollHeight}px`;
-        }
-    }, [block.content]);
 
     useEffect(() => {
         const handleClickOutside = (event: MouseEvent) => {
@@ -125,14 +128,12 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
                     placeholder="Section Title"
                     className={`w-full text-2xl font-semibold text-gray-800 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md p-1 ${hasTitleSuggestion ? 'bg-green-100' : ''}`}
                 />
-                 <textarea
-                    ref={contentRef}
-                    value={displayContent}
-                    onChange={(e) => handleUpdate('content', e.target.value)}
-                    placeholder="Start writing here..."
-                    className={`w-full mt-1 p-1 text-gray-700 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md ${hasContentSuggestion ? 'bg-green-100' : ''}`}
-                    style={{ overflow: 'hidden' }}
-                />
+                 <div className={`w-full mt-1 p-1 text-gray-700 bg-transparent focus:outline-none focus:bg-gray-100 rounded-md ${hasContentSuggestion ? 'bg-green-100' : ''}`}>
+                    <TiptapEditor
+                        content={displayContent}
+                        onChange={(newContent) => handleUpdate('content', newContent)}
+                    />
+                </div>
             </div>
             <div className="relative opacity-0 group-hover:opacity-100 transition-opacity pl-2 pt-2">
                 {block.suggestion ? (
@@ -222,6 +223,17 @@ const PageTitleBlock = ({ block, onUpdate }: { block: Block; onUpdate: (id: stri
     />
 );
 
+function jsonToText(node: any): string {
+    if (!node) return '';
+    if (node.type === 'text') {
+        return node.text || '';
+    }
+    if (node.content && Array.isArray(node.content)) {
+        return node.content.map(jsonToText).join('');
+    }
+    return '';
+}
+
 export default function Home() {
     const { session, supabase } = useAuth();
     const [documentId, setDocumentId] = useState<string | null>(null);
@@ -249,69 +261,53 @@ export default function Home() {
         };
     };
 
-    const saveToSupabase = useCallback(
-        debounce(async (docId: string, newBlocks: Block[]) => {
-            if (!docId) return;
-            
-            const title = newBlocks.find(b => b.id === 'title')?.title || "Untitled";
-            const fields = newBlocks.filter(b => b.id !== 'title');
+    const saveDocument = useRef(debounce(async (docId: string | null, newBlocks: Block[]) => {
+        if (!docId || !supabase) return;
 
-            const { error } = await supabase
-                .from('documents')
-                .update({ title, fields: fields })
-                .eq('id', docId);
+        const titleBlock = newBlocks.find(b => b.id === 'title');
+        const contentBlocks = newBlocks.filter(b => b.id !== 'title');
 
-            if (error) {
-                console.error("Error saving to Supabase:", error);
-            }
-        }, 1000),
-        [supabase]
-    );
-    
+        await supabase
+            .from('documents')
+            .update({ 
+                title: titleBlock?.title || 'Untitled',
+                fields: contentBlocks 
+            })
+            .eq('id', docId);
+
+    }, 1000)).current;
+
+
     useEffect(() => {
         const fetchDocument = async () => {
+            if (!session) return;
             setLoading(true);
-            const user = session?.user;
-            
-            if (!user) {
-                // GUEST MODE: Load default content, don't save.
-                setBlocks([
-                    { id: 'title', title: "My One-Pager", content: "" },
-                    { id: uuidv4(), title: "Problem Statement", content: "As a guest, your work won't be saved." },
-                    { id: uuidv4(), title: "Proposed Solution", content: "Sign up to save your documents!" },
-                ]);
-                setDocumentId(null);
-                setLoading(false);
-                return;
-            }
-            
-            // LOGGED-IN USER: Fetch from Supabase as before
-            let { data: documents, error } = await supabase
+            const { data: documents, error } = await supabase
                 .from('documents')
-                .select('*')
+                .select('id, title, fields')
+                .eq('user_id', session.user.id)
                 .limit(1);
 
             if (error) {
-                console.error("Error fetching document:", error);
-                setLoading(false);
-                return;
+                 console.error('Error fetching document:', error);
+                 setLoading(false);
+                 return;
             }
 
             let doc;
             if (!documents || documents.length === 0) {
-                // No documents found, create a new one
-                const newDoc = {
-                    user_id: user.id,
-                    title: "Untitled One-Pager",
-                    fields: [
-                        { id: uuidv4(), title: "Problem Statement", content: "" },
-                        { id: uuidv4(), title: "Proposed Solution", content: "" }
-                    ]
-                };
+                 // Create a new document if one doesn't exist
                 const { data, error: createError } = await supabase
                     .from('documents')
-                    .insert(newDoc)
-                    .select()
+                    .insert({ 
+                        user_id: session.user.id, 
+                        title: 'My One-Pager', 
+                        fields: [
+                            { id: uuidv4(), title: "Problem Statement", content: { type: 'doc', content: [{ type: 'paragraph' }] } },
+                            { id: uuidv4(), title: "Proposed Solution", content: { type: 'doc', content: [{ type: 'paragraph' }] } },
+                        ]
+                    })
+                    .select('id, title, fields')
                     .single();
                 
                 if (createError) {
@@ -320,66 +316,81 @@ export default function Home() {
                     return;
                 }
                 doc = data;
+
             } else {
                 doc = documents[0];
             }
 
-            setDocumentId(doc.id);
-            const fetchedBlocks: Block[] = [
-                { id: 'title', title: doc.title, content: '' },
-                ...(doc.fields || [])
-            ];
-            setBlocks(fetchedBlocks);
+            if (doc) {
+                const titleBlock: Block = { id: 'title', title: doc.title, content: { type: 'doc', content: [{ type: 'paragraph' }] } };
+                const contentBlocks: Block[] = (doc.fields || []).map((b: any) => {
+                    if (typeof b.content === 'string') {
+                        return { ...b, content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: b.content }] }] } };
+                    }
+                     if (!b.content) {
+                        return { ...b, content: { type: 'doc', content: [{ type: 'paragraph' }] } };
+                    }
+                    return b;
+                });
+
+                setBlocks([titleBlock, ...contentBlocks]);
+                setDocumentId(doc.id);
+            }
             setLoading(false);
         };
 
-        fetchDocument();
+        if (session) {
+            fetchDocument();
+        } else {
+            // GUEST MODE: Load default content, don't save.
+            setBlocks([
+                { id: 'title', title: "My One-Pager", content: { type: 'doc', content: [{ type: 'paragraph' }] } },
+                { id: uuidv4(), title: "Problem Statement", content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: "As a guest, your work won't be saved."}] }] } },
+                { id: uuidv4(), title: "Proposed Solution", content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: "Sign up to save your documents!"}] }] } },
+            ]);
+            setLoading(false);
+        }
     }, [session, supabase]);
 
-    const titleBlock = blocks.find(b => b.id === 'title');
-    const contentBlocks = blocks.filter(b => b.id !== 'title');
-
     const handleBlockUpdate = (id: string, newBlockData: Partial<Block>) => {
-        setBlocks(currentBlocks => currentBlocks.map(block => {
-            if (block.id === id) {
-                return { ...block, ...newBlockData };
-            }
-            return block;
-        }));
+        if (newBlockData.content && typeof newBlockData.content === 'string') {
+            newBlockData.content = { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: newBlockData.content }] }] };
+        }
+        const newBlocks = blocks.map(b => b.id === id ? { ...b, ...newBlockData } : b);
+        setBlocks(newBlocks);
+        saveDocument(documentId, newBlocks);
     };
 
     const handleAddBlockAfter = (afterId: string) => {
         const newBlock: Block = {
             id: uuidv4(),
-            title: "New Section",
-            content: "",
+            title: '',
+            content: { type: 'doc', content: [{ type: 'paragraph' }] },
         };
-        const index = blocks.findIndex(b => b.id === afterId);
+        const afterIndex = blocks.findIndex(b => b.id === afterId);
         const newBlocks = [...blocks];
-        newBlocks.splice(index + 1, 0, newBlock);
+        newBlocks.splice(afterIndex + 1, 0, newBlock);
         setBlocks(newBlocks);
+        saveDocument(documentId, newBlocks);
     };
 
     const handleDeleteBlock = (id: string) => {
-        if (blocks.length > 2) { 
-            const newBlocks = blocks.filter(block => block.id !== id);
-            setBlocks(newBlocks);
-        }
+        const newBlocks = blocks.filter(b => b.id !== id);
+        setBlocks(newBlocks);
+        saveDocument(documentId, newBlocks);
     };
 
     const handleDragEnd = (event: DragEndEvent) => {
-        const {active, over} = event;
-        
+        const { active, over } = event;
+
         if (over && active.id !== over.id) {
-            const reorderedBlocks = ((items) => {
+            setBlocks((items) => {
                 const oldIndex = items.findIndex(item => item.id === active.id);
                 const newIndex = items.findIndex(item => item.id === over.id);
-                if (items[oldIndex].id === 'title' || (over && items[newIndex].id === 'title')) {
-                    return items;
-                }
-                return arrayMove(items, oldIndex, newIndex);
-            })(blocks);
-            setBlocks(reorderedBlocks);
+                const newItems = arrayMove(items, oldIndex, newIndex);
+                saveDocument(documentId, newItems);
+                return newItems;
+            });
         }
     };
 
@@ -392,176 +403,180 @@ export default function Home() {
     };
 
     const handleGenerateOnePager = async () => {
-        if (!titleBlock?.title) {
-            alert("Please enter a title for your one-pager first.");
+        if (!supabase) return;
+
+        const pageTitleBlock = blocks.find(b => b.id === 'title');
+        if (!pageTitleBlock) {
+            alert("Please set a title for your one-pager first.");
             return;
         }
-        setLoading(true); // Use main loading state for simplicity
-        try {
 
+        setLoading(true);
+        try {
             const { data, error } = await supabase.functions.invoke('generate-one-pager', {
-                body: { title: titleBlock.title },
+                body: { title: pageTitleBlock.title }
             });
 
             if (error) throw error;
-            
-            if (data && data.generatedOnePager) {
-                 const newBlocks = data.generatedOnePager.fields.map((field: any) => ({
-                    id: uuidv4(),
-                    title: field.label,
-                    content: field.value
-                }));
-                setBlocks(currentBlocks => {
-                    const title = currentBlocks.find(b => b.id === 'title')
-                    return [
-                        ...(title ? [title] : []), // keep existing title
-                        ...newBlocks
-                    ];
-                });
-            }
 
-        } catch (error) {
-            console.error('Error invoking Supabase function:', error);
-            // You could show an error message to the user here
+            const { generatedOnePager } = data;
+            
+            const newBlocks: Block[] = generatedOnePager.fields.map((field: {label: string, value: string}) => ({
+                id: uuidv4(),
+                title: field.label,
+                content: { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: field.value }] }] }
+            }));
+
+            setBlocks(prev => [prev[0], ...newBlocks]);
+
+        } catch (e: any) {
+            console.error("Failed to generate one-pager:", e);
+            alert("Error: " + e.message);
         } finally {
             setLoading(false);
         }
     };
 
     const handleAiAction = async (blockId: string, actionText: string, field: 'title' | 'content') => {
+        const block = blocks.find(b => b.id === blockId);
+        if (!block || !supabase) return;
+
         setLoadingBlockId(blockId);
 
         try {
-            const currentBlock = blocks.find(b => b.id === blockId);
-            if (!currentBlock) return;
-
-            const documentContext = {
-                title: titleBlock?.title || "Untitled",
-                fields: contentBlocks.map(b => ({ label: b.title, value: b.content }))
+            const blockToRefine = {
+                label: block.title,
+                value: field === 'content' ? jsonToText(block.content) : block.title,
             };
-            
-            const targetField = {
-                label: currentBlock.title,
-                value: field === 'title' ? currentBlock.title : currentBlock.content,
-            }
 
+            const pageTitle = blocks.find(b => b.id === 'title')?.title || 'Untitled';
+            
+            const contextFields = blocks
+                .filter(b => b.id !== 'title')
+                .map(b => ({
+                    label: b.title,
+                    value: jsonToText(b.content)
+                }));
+            
             const { data, error } = await supabase.functions.invoke('refine-with-ai', {
-                body: { documentContext, specificAction: actionText, targetField },
+                body: {
+                    documentContext: { 
+                        title: pageTitle,
+                        fields: contextFields
+                    },
+                    targetField: blockToRefine,
+                    specificAction: actionText,
+                },
             });
 
             if (error) throw error;
-            
-            if (data && data.refinedText) {
-                setBlocks(currentBlocks => currentBlocks.map(block => {
-                    if (block.id === blockId) {
-                        return {
-                            ...block,
-                            suggestion: {
-                                forField: field,
-                                text: data.refinedText,
-                                action: actionText,
-                            }
-                        };
-                    }
-                    return block;
-                }));
-            }
 
-        } catch (error) {
-            console.error('Error invoking Supabase function:', error);
-            // You could show an error message to the user here
+            const { refinedText } = data;
+            const newSuggestion: AiSuggestion = {
+                forField: field,
+                text: refinedText,
+                action: actionText
+            };
+            
+            const newBlocks = blocks.map(b => 
+                b.id === blockId ? { ...b, suggestion: newSuggestion } : b
+            );
+            setBlocks(newBlocks);
+
+        } catch (e: any) {
+            console.error("AI Action failed", e);
+            alert(`Error refining content: ${e.message}`);
         } finally {
             setLoadingBlockId(null);
         }
     };
-
+    
     const handleAcceptSuggestion = (blockId: string) => {
-        setBlocks(currentBlocks => currentBlocks.map(block => {
-            if (block.id === blockId && block.suggestion) {
-                const { forField, text } = block.suggestion;
-                return {
-                    ...block,
-                    [forField]: text, // Replace the content/title with the suggestion
-                    suggestion: null, // Clear the suggestion
-                };
-            }
-            return block;
-        }));
+        const block = blocks.find(b => b.id === blockId);
+        if (!block || !block.suggestion) return;
+
+        const { forField, text } = block.suggestion;
+        
+        handleBlockUpdate(blockId, { [forField]: text, suggestion: null });
     };
 
     const handleRejectSuggestion = (blockId: string) => {
-        setBlocks(currentBlocks => currentBlocks.map(block => {
-            if (block.id === blockId) {
-                return { ...block, suggestion: null }; // Clear the suggestion
-            }
-            return block;
-        }));
+        const newBlocks = blocks.map(b => 
+            b.id === blockId ? { ...b, suggestion: null } : b
+        );
+        setBlocks(newBlocks);
     };
 
+    const getMainTitle = () => blocks.find(b => b.id === 'title')?.title || 'Untitled One-Pager';
+
     if (loading) {
-        return (
-            <main className="flex min-h-screen flex-col items-center p-24">
-                <p>Loading your document...</p>
-            </main>
-        )
+        return <div className="flex items-center justify-center h-screen">Loading...</div>;
     }
 
+    const mainTitleBlock = blocks.find(b => b.id === 'title');
+    const contentBlocks = blocks.filter(b => b.id !== 'title');
+
     return (
-        <main className="flex min-h-screen flex-col items-center p-24">
-            <div className="w-full max-w-4xl">
-                <div className="flex justify-between items-center mb-4">
-                    {blocks.find(b => b.id === 'title') && (
-                        <div className="flex-grow">
-                            <PageTitleBlock block={blocks.find(b => b.id === 'title')!} onUpdate={handleBlockUpdate} />
-                        </div>
-                    )}
-                    <button 
-                        onClick={handleGenerateOnePager}
-                        disabled={loading}
-                        className="ml-4 bg-indigo-600 text-white px-4 py-2 rounded-md flex items-center space-x-2 hover:bg-indigo-700 transition-colors disabled:bg-indigo-300"
-                    >
-                        <svg xmlns="http://www.w3.org/2000/svg" width="20" height="20" viewBox="0 0 24 24" fill="none" stroke="currentColor" strokeWidth="2" strokeLinecap="round" strokeLinejoin="round">
-                            <path d="M12.22 2h-.44a2 2 0 0 0-2 2v.18a2 2 0 0 1-1 1.73l-.43.25a2 2 0 0 1-2 0l-.15-.08a2 2 0 0 0-2.73.73l-.22.38a2 2 0 0 0 .73 2.73l.15.1a2 2 0 0 1 0 2l-.15.08a2 2 0 0 0-.73 2.73l.22.38a2 2 0 0 0 2.73.73l.15-.08a2 2 0 0 1 2 0l.43.25a2 2 0 0 1 1 1.73V20a2 2 0 0 0 2 2h.44a2 2 0 0 0 2-2v-.18a2 2 0 0 1 1-1.73l.43-.25a2 2 0 0 1 2 0l.15.08a2 2 0 0 0 2.73-.73l.22-.38a2 2 0 0 0-.73-2.73l-.15-.08a2 2 0 0 1 0-2l.15.08a2 2 0 0 0 .73-2.73l-.22-.38a2 2 0 0 0-2.73-.73l-.15.08a2 2 0 0 1-2 0l-.43-.25a2 2 0 0 1-1-1.73V4a2 2 0 0 0-2-2z"/>
-                            <circle cx="12" cy="12" r="3"/>
-                        </svg>
-                        <span>Generate</span>
-                    </button>
+        <div className="flex h-screen bg-gray-50">
+            <main className="flex-1 flex flex-col">
+                <header className="flex items-center justify-between p-4 border-b">
+                    <h1 className="text-xl font-semibold">My One-Pager</h1>
+                     <div className="flex items-center space-x-2">
+                         <button 
+                            onClick={handleGenerateOnePager} 
+                            className="px-4 py-2 text-sm font-medium text-white bg-blue-600 rounded-md hover:bg-blue-700 focus:outline-none focus:ring-2 focus:ring-offset-2 focus:ring-blue-500"
+                            disabled={loadingBlockId !== null}
+                        >
+                            {loadingBlockId === null && '✨ Generate with AI'}
+                            {loadingBlockId !== null && 'AI is thinking...'}
+                        </button>
+                        <AuthButton />
+                    </div>
+                </header>
+
+                <div className="flex-1 overflow-y-auto p-8 lg:p-16">
+                    <div className="max-w-4xl mx-auto">
+                        {mainTitleBlock && <PageTitleBlock block={mainTitleBlock} onUpdate={handleBlockUpdate} />}
+                        <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
+                            <SortableContext items={contentBlocks} strategy={verticalListSortingStrategy}>
+                                <div className="mt-8 space-y-4">
+                                {contentBlocks.map((block) => (
+                                    <SortableEditableBlock 
+                                        key={block.id} 
+                                        block={block}
+                                        isAiLoading={loadingBlockId === block.id}
+                                        onUpdate={handleBlockUpdate}
+                                        onDelete={handleDeleteBlock}
+                                        onAddAfter={handleAddBlockAfter}
+                                        onAiAction={handleAiAction}
+                                        onAcceptSuggestion={handleAcceptSuggestion}
+                                        onRejectSuggestion={handleRejectSuggestion}
+                                        onViewSuggestion={handleViewSuggestion}
+                                    />
+                                ))}
+                                </div>
+                            </SortableContext>
+                        </DndContext>
+                    </div>
                 </div>
-               
-                <DndContext sensors={sensors} collisionDetection={closestCenter} onDragEnd={handleDragEnd}>
-                    <SortableContext items={contentBlocks} strategy={verticalListSortingStrategy}>
-                        <div className="mt-8 space-y-4">
-                            {contentBlocks.map(block => (
-                                <SortableEditableBlock 
-                                    key={block.id} 
-                                    block={block} 
-                                    isAiLoading={loadingBlockId === block.id}
-                                    onUpdate={handleBlockUpdate} 
-                                    onDelete={handleDeleteBlock} 
-                                    onAddAfter={handleAddBlockAfter}
-                                    onAiAction={handleAiAction}
-                                    onAcceptSuggestion={handleAcceptSuggestion}
-                                    onRejectSuggestion={handleRejectSuggestion}
-                                    onViewSuggestion={handleViewSuggestion}
-                                />
-                            ))}
-                        </div>
-                    </SortableContext>
-                </DndContext>
-                {selectedBlock && selectedBlock.suggestion && (
+
+                {modalOpen && selectedBlock && selectedBlock.suggestion && (
                     <SideBySideModal
                         isOpen={modalOpen}
-                        onClose={() => setModalOpen(false)}
+                        onClose={() => {
+                            handleRejectSuggestion(selectedBlock.id);
+                            setModalOpen(false);
+                        }}
                         onAccept={() => {
                             handleAcceptSuggestion(selectedBlock.id);
                             setModalOpen(false);
                         }}
-                        originalContent={selectedBlock[selectedBlock.suggestion.forField]}
+                        originalContent={selectedBlock.suggestion.forField === 'content' ? jsonToText(selectedBlock.content) : selectedBlock.title}
                         suggestedContent={selectedBlock.suggestion.text}
                         fieldName={selectedBlock.suggestion.forField}
                     />
                 )}
-            </div>
-        </main>
+            </main>
+        </div>
     );
 }

@@ -31,10 +31,7 @@ const SideBySideModal: React.FC<SideBySideModalProps> = ({ isOpen, onClose, onAc
             Cancel
           </button>
           <button
-            onClick={() => {
-              onAccept();
-              onClose();
-            }}
+            onClick={onAccept}
             className="px-4 py-2 rounded text-white bg-green-600 hover:bg-green-700"
           >
             Accept Suggestion
