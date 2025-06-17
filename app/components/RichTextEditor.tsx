@@ -55,4 +55,4 @@ export const TiptapEditor = ({ content, onChange }: TiptapProps) => {
       <EditorContent editor={editor} />
     </>
   );
-}; 
+};

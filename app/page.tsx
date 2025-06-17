@@ -13,7 +13,7 @@ import AuthButton from "./components/AuthButton";
 
 type AiSuggestion = {
     forField: 'title' | 'content';
-    text: string;
+    content: JSONContent;
     action: string;
 };
 
@@ -34,9 +34,12 @@ type EditableBlockProps = {
     onAcceptSuggestion: (blockId: string) => void;
     onRejectSuggestion: (blockId: string) => void;
     onViewSuggestion: (blockId: string) => void;
+    followUpSuggestion: {fieldId: string | null, action: string | null};
+    onClearFollowUp: () => void;
+    onStructuralAiAction: (blockId: string, action: string) => void;
 };
 
-const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAfter, onAiAction, onAcceptSuggestion, onRejectSuggestion, onViewSuggestion }: EditableBlockProps) => {
+const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAfter, onAiAction, onAcceptSuggestion, onRejectSuggestion, onViewSuggestion, followUpSuggestion, onClearFollowUp, onStructuralAiAction }: EditableBlockProps) => {
     const { attributes, listeners, setNodeRef, transform, transition } = useSortable({id: block.id});
     const style = {
         transform: CSS.Transform.toString(transform),
@@ -51,12 +54,11 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
     const hasTitleSuggestion = block.suggestion?.forField === 'title';
     const hasContentSuggestion = block.suggestion?.forField === 'content';
 
-    const displayTitle = hasTitleSuggestion ? block.suggestion!.text : block.title;
+    const displayTitle = hasTitleSuggestion ? jsonToText(block.suggestion!.content) : block.title;
     
     const displayContent = useMemo(() => {
         if (hasContentSuggestion) {
-            // Convert suggestion string to TipTap JSON format
-            return { type: 'doc', content: [{ type: 'paragraph', content: [{ type: 'text', text: block.suggestion!.text }] }] };
+            return block.suggestion!.content;
         }
         return block.content;
     }, [block.content, block.suggestion, hasContentSuggestion]);
@@ -134,6 +136,27 @@ const SortableEditableBlock = ({ block, isAiLoading, onUpdate, onDelete, onAddAf
                         onChange={(newContent) => handleUpdate('content', newContent)}
                     />
                 </div>
+                {followUpSuggestion.fieldId === block.id && (
+                    <div className="follow-up-chip flex items-center justify-between p-2 mt-2 bg-indigo-50 border border-indigo-200 rounded-lg">
+                        <p className="text-sm text-indigo-800">
+                            Want to summarize this as key bullet points?
+                        </p>
+                        <div className="space-x-2">
+                            <button 
+                                onClick={() => onClearFollowUp()}
+                                className="text-sm font-semibold text-slate-600 hover:text-slate-900"
+                            >
+                                No, thanks
+                            </button>
+                            <button 
+                                onClick={() => onStructuralAiAction(block.id, followUpSuggestion.action!)}
+                                className="text-sm font-semibold text-indigo-600 hover:text-indigo-900"
+                            >
+                                Yes, Summarize
+                            </button>
+                        </div>
+                    </div>
+                )}
             </div>
             <div className="relative opacity-0 group-hover:opacity-100 transition-opacity pl-2 pt-2">
                 {block.suggestion ? (
@@ -242,6 +265,10 @@ export default function Home() {
     const [loadingBlockId, setLoadingBlockId] = useState<string | null>(null);
     const [modalOpen, setModalOpen] = useState(false);
     const [selectedBlock, setSelectedBlock] = useState<Block | null>(null);
+    const [followUpSuggestion, setFollowUpSuggestion] = useState<{fieldId: string | null, action: string | null}>({
+      fieldId: null,
+      action: null
+    });
 
     const sensors = useSensors(
         useSensor(PointerSensor),
@@ -471,10 +498,31 @@ export default function Home() {
 
             if (error) throw error;
 
-            const { refinedText } = data;
+            let suggestionContent: JSONContent;
+
+            if (actionText.toLowerCase().includes('summarize') && data.items) {
+                suggestionContent = {
+                    type: 'doc',
+                    content: [
+                        {
+                            type: 'bulletList',
+                            content: data.items.map((itemText: string) => ({
+                                type: 'listItem',
+                                content: [{ type: 'paragraph', content: [{ type: 'text', text: itemText }] }]
+                            }))
+                        }
+                    ]
+                };
+            } else {
+                suggestionContent = {
+                    type: 'doc',
+                    content: [{ type: 'paragraph', content: [{ type: 'text', text: data.refinedText }] }]
+                };
+            }
+
             const newSuggestion: AiSuggestion = {
                 forField: field,
-                text: refinedText,
+                content: suggestionContent,
                 action: actionText
             };
             
@@ -490,14 +538,26 @@ export default function Home() {
             setLoadingBlockId(null);
         }
     };
+
+    const handleStructuralAiAction = async (blockId: string, action: string) => {
+        setFollowUpSuggestion({ fieldId: null, action: null });
+        // The follow-up action is always on the content.
+        await handleAiAction(blockId, action, 'content');
+    };
     
     const handleAcceptSuggestion = (blockId: string) => {
         const block = blocks.find(b => b.id === blockId);
         if (!block || !block.suggestion) return;
 
-        const { forField, text } = block.suggestion;
+        const { forField, content } = block.suggestion;
         
-        handleBlockUpdate(blockId, { [forField]: text, suggestion: null });
+        handleBlockUpdate(blockId, { [forField]: content, suggestion: null });
+        
+        const textForFollowUp = jsonToText(content);
+        // We'll suggest summarizing for any field that's long enough
+        if (textForFollowUp.length > 100) { // Example condition
+            setFollowUpSuggestion({ fieldId: blockId, action: 'summarize' });
+        }
     };
 
     const handleRejectSuggestion = (blockId: string) => {
@@ -552,6 +612,9 @@ export default function Home() {
                                         onAcceptSuggestion={handleAcceptSuggestion}
                                         onRejectSuggestion={handleRejectSuggestion}
                                         onViewSuggestion={handleViewSuggestion}
+                                        followUpSuggestion={followUpSuggestion}
+                                        onClearFollowUp={() => setFollowUpSuggestion({ fieldId: null, action: null })}
+                                        onStructuralAiAction={handleStructuralAiAction}
                                     />
                                 ))}
                                 </div>
@@ -572,7 +635,7 @@ export default function Home() {
                             setModalOpen(false);
                         }}
                         originalContent={selectedBlock.suggestion.forField === 'content' ? jsonToText(selectedBlock.content) : selectedBlock.title}
-                        suggestedContent={selectedBlock.suggestion.text}
+                        suggestedContent={jsonToText(selectedBlock.suggestion.content)}
                         fieldName={selectedBlock.suggestion.forField}
                     />
                 )}

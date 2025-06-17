@@ -23,3 +23,13 @@ body {
   background-color: white;
   color: black;
 }
+
+/* TipTap list style override */
+.prose ul {
+    list-style-type: disc !important;
+    padding-left: 1.5rem !important;
+}
+
+.prose ul li::marker {
+    color: black;
+}
